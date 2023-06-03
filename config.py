@@ -23,8 +23,6 @@ def get_config():
     config.colorize_nlabels = None
     config.monitor = None
 
-    config
-
     config.lr = lr = ml_collections.ConfigDict()
     lr.min_lr = 1e-5
     lr.max_lr = 1e-4
@@ -39,15 +37,13 @@ def get_config():
     weight.perceptual_weight = 0.1
 
     config.data = data = ml_collections.ConfigDict()
-    data.root = datasets_folder
+    data.batch_size = 128
     data.train = True
-    data.download = True
-    data.S = 256
-    data.batch_size = 128 # use 128 if you have enough memory or use distributed
-    data.shuffle = True
-    data.shape = [3,32,32]
-    data.random_flips = True
+    data.num_workers = 12
+    data.training_images_list_file = ""
+    data.test_images_list_file = ""
 
     config.resume = False
+    config.checkpoint = None
 
     return config
