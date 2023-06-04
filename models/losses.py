@@ -2,8 +2,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from lpips import LPIPS
-from discriminator import Discriminator, weights_init
+from models.lpips import LPIPS
+from models.discriminator import Discriminator
 
 
 class DummyLoss(nn.Module):
@@ -53,7 +53,7 @@ class VQLoss(nn.Module):
 
         self.discriminator = Discriminator(in_channels = in_channels, 
                                            num_filters_last= num_filters_last,
-                                           n_layers=n_layers).apply(weights_init)
+                                           n_layers=n_layers)
         self.discriminator_iter_start = disc_start 
         
         if disc_loss == "hinge":
@@ -114,8 +114,7 @@ class VQLoss(nn.Module):
             #adaptive lambda update
             try:
                 d_weight = self.calculate_adaptive_weight(nll_loss, g_loss, last_layer=last_layer)
-            except RuntimeError:
-                print("lambda update is not sccessful! ")
+            except RuntimeError as e:
                 assert not self.training
                 d_weight = torch.tensor(0.0)
             
@@ -136,12 +135,8 @@ class VQLoss(nn.Module):
 
         if optimizer_idx == 1:
             # second pass for discriminator update
-            if cond is None:
-                logits_real = self.discriminator(inputs.contiguous().detach())
-                logits_fake = self.discriminator(reconstructions.contiguous().detach())
-            else:
-                logits_real = self.discriminator(torch.cat((inputs.contiguous().detach(), cond), dim=1))
-                logits_fake = self.discriminator(torch.cat((reconstructions.contiguous().detach(), cond), dim=1))
+            logits_real = self.discriminator(inputs.contiguous().detach())
+            logits_fake = self.discriminator(reconstructions.contiguous().detach())
 
             disc_factor = adopt_weight(self.disc_factor, global_step, threshold=self.discriminator_iter_start)
             d_loss = disc_factor * self.disc_loss(logits_real, logits_fake)

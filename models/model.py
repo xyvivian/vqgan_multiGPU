@@ -1,12 +1,12 @@
 import torch.nn as nn
-from utils import ResidualBlock, AttnBlock, UpSample, GroupNorm, Swish,DownSample
+from models.utils import ResidualBlock, AttnBlock, UpSample, GroupNorm, Swish,DownSample
 
 class Encoder(nn.Module):
     def __init__(self, 
                 ch,  #[64,128,256]
                 num_res_blocks, #2
                 attn_resolutions,  #
-                resamp_with_conv=True,
+                resamp_with_conv,
                 in_channels, #3
                 resolution, 
                 z_channels, #[512]
@@ -26,7 +26,7 @@ class Encoder(nn.Module):
                 if resolution in attn_resolutions:
                     layers.append(AttnBlock(in_channels))
             if i != len(channels)-2:
-                layers.append(DownSample(channels[i+1], resampe_with_conv))
+                layers.append(DownSample(channels[i+1], resamp_with_conv))
                 resolution //= 2
         
         #middle 
@@ -45,13 +45,14 @@ class Encoder(nn.Module):
 
 
 
+
 class Decoder(nn.Module):
     def __init__(self, 
                  ch, 
                  out_ch, 
                  num_res_blocks,
                  attn_resolutions,
-                 resamp_with_conv=True, 
+                 resamp_with_conv, 
                  resolution, 
                  z_channels, 
                  give_pre_end=False, 
@@ -63,24 +64,25 @@ class Decoder(nn.Module):
 
         layers = [nn.Conv2d(z_channels, in_channels, 3, 1, 1),
                   ResidualBlock(in_channels, in_channels),
-                  AtttnBlock(in_channels),
+                  AttnBlock(in_channels),
                   ResidualBlock(in_channels, in_channels)]
         
         #upsampling
-        for i in range(len(channels)):
+        for i in range(1,len(channels)):
             out_channels = channels[i]
             for j in range(num_res_blocks):
                 layers.append(ResidualBlock(in_channels, out_channels))
                 in_channels = out_channels
                 if resolution in attn_resolutions:
                     layers.append(AttnBlock(in_channels))
-            if i != 0:
+            if i != 1:
                 layers.append(UpSample(in_channels, resamp_with_conv))
                 resolution *= 2
 
         layers.append(GroupNorm(in_channels))
         layers.append(Swish())
-        layers.append(nn.Conv2d(in_channels, out_ch, 3, 1, 1))
+        self.conv_out = nn.Conv2d(in_channels, out_ch, 3, 1, 1)
+        layers.append(self.conv_out)
         self.model = nn.Sequential(*layers)
 
     def forward(self, x):

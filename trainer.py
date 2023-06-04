@@ -13,6 +13,8 @@ from pytorch_lightning.utilities import rank_zero_only
 from config import get_config
 from vqgan import VQGAN
 from data.custom import CustomTrain, CustomTest
+import time
+import torch.multiprocessing as mp
 
 
 
@@ -21,24 +23,30 @@ class CustomDataModule(pl.LightningDataModule):
                  batch_size,
                  num_workers,
                  training_images_list_file,
-                 test_images_list_file)
-                 )
-                 ):
+                 test_images_list_file):
         super().__init__()
         self.batch_size = batch_size
         self.num_workers = num_workers
         self.training_images_list_file = training_images_list_file
-        self.test_images_list_file = test_iamges_list_file
+        self.test_images_list_file = test_images_list_file
 
     def setup(self, stage=None):
-        self.train_dataset = CustomTrain(self.training_images_list_file, size = 256)
-        self.val_dataset =  CustomTest(self.test_images_list_file, size = 256)
+        self.train_dataset = CustomTrain(training_images_list_file = self.training_images_list_file, size = 64)
+        self.val_dataset =  CustomTest(test_images_list_file = self.test_images_list_file, size = 64)
 
     def train_dataloader(self):
-        return DataLoader(self.train_dataset, batch_size=self.batch_size, shuffle=True)
+        return DataLoader(self.train_dataset, 
+                          batch_size=self.batch_size, 
+                          shuffle=True,
+                          num_workers = self.num_workers,
+                          persistent_workers=True)
 
     def val_dataloader(self):
-        return DataLoader(self.val_dataset, batch_size=self.batch_size)
+        return DataLoader(self.val_dataset,
+                          batch_size=self.batch_size,
+                          shuffle = False,
+                          num_workers = self.num_workers,
+                          persistent_workers=True)
 
 
 
@@ -135,10 +143,10 @@ class ImageLogger(Callback):
             return True
         return False
 
-    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx = None):
         self.log_img(pl_module, batch, batch_idx, split="train")
 
-    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx):
+    def on_validation_batch_end(self, trainer, pl_module, outputs, batch, batch_idx, dataloader_idx = None):
         self.log_img(pl_module, batch, batch_idx, split="val")
 
 
@@ -147,10 +155,14 @@ if __name__ == "__main__":
     now = datetime.datetime.now().strftime("%Y-%m-%dT%H-%M-%S")
     sys.path.append(os.getcwd())
     opt = get_config()
+    logdir = "logs"
+    os.makedirs("logs" + "/" + now, exist_ok=True)
     ckptdir = os.path.join(logdir, "checkpoints")
     cfgdir = os.path.join(logdir, "configs")
     seed_everything(opt.seed)
-
+    
+    
+    mp.set_start_method('spawn', force=True)
     model = VQGAN(opt.model.ch,  #[64,128,256]
                   opt.model.num_res_blocks, #2
                   opt.model.attn_resolutions,  #
@@ -160,7 +172,7 @@ if __name__ == "__main__":
                   opt.model.z_channels,
                   opt.model.num_codebook_vectors,
                   opt.model.latent_dim,
-                  opt.model.ckpt_path=None,
+                  opt.model.ckpt_path,
                   ignore_keys=[],
                   image_key="image",
                   colorize_nlabels=None,
@@ -177,60 +189,67 @@ if __name__ == "__main__":
                   disc_factor= opt.weight.disc_factor,         #1.0    
                   disc_weight= opt.weight.disc_weight,         #0.1
                   perceptual_weight= opt.weight.perceptual_weight,   #0.1
-                  disc_loss= opt.model.disc_loss)
+                  disc_loss= opt.model.disc_loss,
+                  beta1 = opt.lr.beta1,
+                  beta2 = opt.lr.beta2)
     
     #build training loggers 
     trainer_loggers = []
-    trainer_loggers.append(pytorch_lightning.loggers.WandbLogger(name = nowname,
-                                                                 save_dir = logdir, 
-                                                                 offline = False,
-                                                                 id = nowname))
-    trainer_loggers.append(pytorch_lightning.loggers.TensorBoardLogger(name = nowname,
-                                                                       save_dir = logdir))
+    # trainer_loggers.append(pl.loggers.WandbLogger(name = now,
+    #                                              save_dir = logdir, 
+    #                                              offline = False,
+    #                                              id = now))
+    trainer_loggers.append(pl.loggers.TensorBoardLogger(name = now,
+                                                       save_dir = logdir))
     trainer_callbacks = []
-    trainer_callbacks.append(pytorch_lightning.callbacks.ModelCheckpoint(dirpath = ckptdir,
-                                                                         filename = "{epoch:06}",
-                                                                         verbose = True,
-                                                                         save_last = True,
-                                                                         monitor = model.monitor,
-                                                                         save_top_k = 5))
+    trainer_callbacks.append(pl.callbacks.ModelCheckpoint(dirpath = ckptdir,
+                                                         filename = "{epoch:06}",
+                                                         verbose = True,
+                                                         save_last = True,
+                                                         monitor = "val/total_exitloss",
+                                                         save_top_k = 5))
     trainer_callbacks.append(ImageLogger(batch_frequency = 750,
-                                         max_images = 4,
-                                         clamp = True))
-    trainer_callbacks.append(LearningRateMonitor("logging_interval": "step"))
+                                        max_images = 4,
+                                        clamp = True))
+    trainer_callbacks.append(LearningRateMonitor(logging_interval= "step"))
 
     trainer = Trainer(accelerator = opt.accelerator,
-                    devices= opt.devices,
-                    callbacks = trainer_callbacks,
-                    logger = trainer_loggers)
+                     devices= opt.devices,
+                     callbacks = trainer_callbacks,
+                     logger = trainer_loggers,
+                     max_epochs = opt.lr.max_epochs,
+                     strategy = "ddp_spawn")
 
     # data
     data = CustomDataModule(batch_size= opt.data.batch_size,
                             num_workers = opt.data.num_workers,
                             training_images_list_file = opt.data.training_images_list_file,
                             test_images_list_file = opt.data.test_images_list_file)
-
+    #try iterating through the validation dataloader
+    data.setup()
+    for i in data.val_dataloader():
+        continue
     # allow checkpointing via USR1
-    def melk(*args, **kwargs):
-        # run all checkpoint hooks
-        if trainer.global_rank == 0:
-            print("Summoning checkpoint.")
-            ckpt_path = os.path.join(ckptdir, "last.ckpt")
-            trainer.save_checkpoint(ckpt_path)
+    # def melk(*args, **kwargs):
+    #     # run all checkpoint hooks
+    #     if trainer.global_rank == 0:
+    #         print("Summoning checkpoint.")
+    #         ckpt_path = os.path.join(ckptdir, "last.ckpt")
+    #         trainer.save_checkpoint(ckpt_path)
 
-    def divein(*args, **kwargs):
-        if trainer.global_rank == 0:
-            import pudb; pudb.set_trace()
+    # def divein(*args, **kwargs):
+    #     if trainer.global_rank == 0:
+    #         import pudb; pudb.set_trace()
 
-    import signal
-    signal.signal(signal.SIGUSR1, melk)
-    signal.signal(signal.SIGUSR2, divein)
+    # import signal
+    # signal.signal(signal.SIGUSR1, melk)
+    # signal.signal(signal.SIGUSR2, divein)
 
     # run
     if opt.resume:
         trainer.load_from_checkpoint(opt.checkpoint)
     try:
         trainer.fit(model, data)
-        except Exception:
-             melk()
-             raise
+    except Exception:
+        #melk()
+        raise

@@ -40,7 +40,7 @@ class GroupNorm(nn.Module):
         return self.gn(x)
 
 
-class Upsample(nn.Module):
+class UpSample(nn.Module):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         #additional convolutional  vs non-convolutional step
@@ -59,7 +59,7 @@ class Upsample(nn.Module):
         return x
 
 
-class Downsample(nn.Module):
+class DownSample(nn.Module):
     def __init__(self, in_channels, with_conv):
         super().__init__()
         self.with_conv = with_conv
